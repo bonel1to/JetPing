@@ -1,0 +1,2 @@
+"""JetPing bot package."""
+

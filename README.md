@@ -27,7 +27,7 @@ copy .env.example .env
 
 ```env
 TELEGRAM_BOT_TOKEN=telegram_bot_token_from_botfather
-JETPING_PRICE_PROVIDER=mock
+JETPING_PRICE_PROVIDERS=mock
 ```
 
 Запуск:

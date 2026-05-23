@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from app.bot import create_application
+from app.bot import create_application # type: ignore [attr-defined]
 from app.config import load_settings
 
 
@@ -14,10 +14,14 @@ def main() -> None:
     )
 
     settings = load_settings()
+    # Initialize database
+    from app.db import init_db
+    init_db(settings.database_path)
     application = create_application(settings)
 
     # Python 3.14 no longer provides a default event loop in the main thread.
     asyncio.set_event_loop(asyncio.new_event_loop())
+    logging.info("Бот успешно запущен и готов к работе! Нажмите Ctrl+C для остановки.")
     application.run_polling(allowed_updates=None)
 
 

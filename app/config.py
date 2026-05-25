@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 from dataclasses import dataclass
@@ -16,6 +16,7 @@ class Settings:
     travelpayouts_token: str | None = None
     currency: str = "rub"
     market: str = "ru"
+    scheduler_tick_seconds: int = 60
 
 
 def load_settings(require_telegram_token: bool = True) -> Settings:
@@ -38,4 +39,17 @@ def load_settings(require_telegram_token: bool = True) -> Settings:
         travelpayouts_token=os.getenv("TRAVELPAYOUTS_TOKEN", "").strip() or None,
         currency=os.getenv("JETPING_CURRENCY", "rub").strip().lower(),
         market=os.getenv("JETPING_MARKET", "ru").strip().lower(),
+        scheduler_tick_seconds=parse_positive_int(os.getenv("JETPING_SCHEDULER_TICK_SECONDS"), default=60),
     )
+
+
+def parse_positive_int(value: str | None, default: int) -> int:
+    if value is None or not value.strip():
+        return default
+
+    try:
+        parsed = int(value)
+    except ValueError:
+        return default
+
+    return parsed if parsed > 0 else default

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from html import escape
 from asyncio import to_thread
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from app.db import (
     update_tracked_route_price,
 )
 from app.price_provider import PriceProvider, PriceProviderError, PriceQuote
+from app.ui import build_back_keyboard, delete_tracked_ui_messages, format_airline_name, track_ui_message
 
 LOGGER = logging.getLogger(__name__)
 
@@ -108,19 +110,31 @@ async def notify_price_drop(
 ) -> None:
     old_currency = (route.currency or quote.currency).upper()
     new_currency = quote.currency.upper()
+    route_text = escape(f"{route.origin} -> {route.destination}")
+    dates = escape(format_route_dates(route))
     message = (
-        "Цена снизилась.\n"
-        f"Отслеживание #{route.id}\n"
-        f"Маршрут: {route.origin} -> {route.destination}\n"
-        f"Даты: {format_route_dates(route)}\n"
+        "<b>Цена снизилась</b>\n"
+        f"Отслеживание: <code>#{route.id}</code>\n"
+        f"Маршрут: <b>{route_text}</b>\n"
+        f"Даты: <code>{dates}</code>\n"
         f"Было: {old_price:,} {old_currency}\n".replace(",", " ")
-        + f"Стало: {quote.price:,} {new_currency}\n".replace(",", " ")
-        + f"Сервис: {quote.service}"
+        + f"Стало: <b>{quote.price:,} {new_currency}</b>".replace(",", " ")
     )
-    if quote.airline:
-        message += f"\nАвиакомпания: {quote.airline}"
+    airline_name = format_airline_name(quote.airline)
+    if airline_name:
+        message += f"\nАвиакомпания: {escape(airline_name)}"
     if quote.link:
-        message += f"\nСсылка: {quote.link}"
+        message += f"\nСсылка: {escape(quote.link)}"
 
-    await application.bot.send_message(chat_id=route.user_id, text=message)
+    await delete_tracked_ui_messages(application.bot, application.bot_data, route.user_id)
+    sent_message = await application.bot.send_message(
+        chat_id=route.user_id,
+        text=message,
+        reply_markup=build_back_keyboard(),
+        parse_mode="HTML",
+    )
+    track_ui_message(application.bot_data, route.user_id, sent_message.message_id)
     LOGGER.info("Price drop notification sent for route %s", route.id)
+
+
+

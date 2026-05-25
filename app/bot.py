@@ -1,12 +1,14 @@
 ﻿from __future__ import annotations
 
 import logging
+from html import escape
 from asyncio import to_thread
 from datetime import date
 
-from telegram import ReplyKeyboardRemove, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     ConversationHandler,
@@ -18,11 +20,13 @@ from app.config import Settings
 from app.db import create_tracked_route, deactivate_tracked_route, list_tracked_routes, save_search
 from app.price_provider import FlightSearch, PriceProvider, PriceProviderError, PriceQuote, build_price_provider
 from app.scheduler import start_scheduler, stop_scheduler
+from app.ui import build_back_keyboard, delete_tracked_ui_messages, format_airline_name, track_ui_message
 
 LOGGER = logging.getLogger(__name__)
 
 ORIGIN, DESTINATION, DEPARTURE_DATE, RETURN_DATE = range(4)
 TRACK_ORIGIN, TRACK_DESTINATION, TRACK_DEPARTURE_DATE, TRACK_RETURN_DATE, TRACK_INTERVAL = range(10, 15)
+
 
 INTERVAL_OPTIONS = {
     "1 минута": 1,
@@ -64,7 +68,10 @@ def create_application(settings: Settings) -> Application:
     application.add_handler(CommandHandler("delete", delete_track))
     application.add_handler(
         ConversationHandler(
-            entry_points=[CommandHandler("price", price_start)],
+            entry_points=[
+                CommandHandler("price", price_start),
+                CallbackQueryHandler(price_start_from_menu, pattern="^menu:price$"),
+            ],
             states={
                 ORIGIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, origin_received)],
                 DESTINATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, destination_received)],
@@ -76,7 +83,10 @@ def create_application(settings: Settings) -> Application:
     )
     application.add_handler(
         ConversationHandler(
-            entry_points=[CommandHandler("track", track_start)],
+            entry_points=[
+                CommandHandler("track", track_start),
+                CallbackQueryHandler(track_start_from_menu, pattern="^menu:track$"),
+            ],
             states={
                 TRACK_ORIGIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, track_origin_received)],
                 TRACK_DESTINATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, track_destination_received)],
@@ -87,26 +97,58 @@ def create_application(settings: Settings) -> Application:
             fallbacks=[CommandHandler("cancel", cancel)],
         )
     )
+    application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu:(list|delete|help|back)$"))
     return application
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    admin_ids = context.bot_data.get("admin_ids", set())
-    greeting = "Привет, суперпользователь!\n\n" if user_id in admin_ids else ""
-
-    await update.message.reply_text(
-        f"{greeting}JetPing отслеживает цены на авиабилеты.\n\n"
-        "Доступно сейчас:\n"
-        "/price - разовая проверка цены\n"
-        "/track - сохранить маршрут для отслеживания\n"
-        "/list - показать активные отслеживания\n"
-        "/delete <id> - удалить отслеживание"
-    )
+    await send_main_menu(update, context)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
+    await send_help_message(update, context)
+
+
+async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query is None:
+        return
+
+    await query.answer()
+    action = query.data
+    if action == "menu:list":
+        await list_tracks(update, context)
+    elif action == "menu:delete":
+        await send_ui_text(update, context, "Чтобы удалить отслеживание, отправьте команду с ID: /delete 1", reply_markup=build_back_keyboard())
+    elif action == "menu:help":
+        await send_help_message(update, context)
+    elif action == "menu:back":
+        await send_main_menu(update, context)
+
+
+async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    username = f"@{user.username}" if user and user.username else (user.first_name if user else "пользователь")
+    username = escape(username)
+
+    caption = (
+        f"Привет, <b>{username}</b>.\n\n"
+        "Я помогу быстро проверить цену на авиабилет, сохранить маршрут "
+        "и уведомить тебя, если цена станет ниже.\n\n"
+        "<b>Формат ввода</b>\n"
+        "Маршрут: <code>MOW</code> -> <code>LED</code>\n"
+        "Дата: <code>YYYY-MM-DD</code>\n"
+        "Возврат: дата или <code>-</code> для билета в одну сторону\n\n"
+        "Выберите действие ниже."
+    )
+
+    await send_ui_text(update, context, caption, reply_markup=build_main_menu_keyboard(), parse_mode="HTML")
+
+
+async def send_help_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await send_ui_text(
+        update,
+        context,
         "Команды:\n"
         "/price - проверить текущую цену\n"
         "/track - сохранить маршрут для будущего отслеживания\n"
@@ -114,55 +156,109 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/delete <id> - удалить отслеживание\n"
         "/cancel - отменить ввод\n\n"
         "Формат даты: YYYY-MM-DD.\n"
-        "Города пока вводятся IATA-кодами: MOW, LED, AER, KZN."
+        "Города пока вводятся IATA-кодами: MOW, LED, AER, KZN.",
+        reply_markup=build_back_keyboard(),
     )
 
 
+async def send_ui_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, **kwargs: object) -> None:
+    chat = update.effective_chat
+    if chat is None:
+        return
+
+    await delete_current_user_message(update)
+    extra_message_ids = []
+    if update.callback_query and update.callback_query.message:
+        extra_message_ids.append(update.callback_query.message.message_id)
+    await delete_tracked_ui_messages(context.bot, context.bot_data, chat.id, extra_message_ids)
+
+    message = await context.bot.send_message(chat_id=chat.id, text=text, **kwargs)
+    track_ui_message(context.bot_data, chat.id, message.message_id)
+
+
+async def delete_current_user_message(update: Update) -> None:
+    if update.message is None:
+        return
+
+    try:
+        await update.message.delete()
+    except Exception:
+        LOGGER.debug("Failed to delete user message", exc_info=True)
+
+
+def build_main_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Проверить стоимость", callback_data="menu:price"),
+                InlineKeyboardButton("Отслеживать маршрут", callback_data="menu:track"),
+            ],
+            [InlineKeyboardButton("Активные отслеживания", callback_data="menu:list")],
+            [
+                InlineKeyboardButton("Удалить отслеживание", callback_data="menu:delete"),
+                InlineKeyboardButton("Помощь", callback_data="menu:help"),
+            ],
+        ]
+    )
+
+
+
+
 async def price_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await begin_price(update, context)
+
+
+async def price_start_from_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.callback_query:
+        await update.callback_query.answer()
+    return await begin_price(update, context)
+
+
+async def begin_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     context.user_data["flow"] = "price"
-    await update.message.reply_text("Введите город вылета IATA-кодом, например MOW:")
+    await send_ui_text(update, context, "Введите город вылета IATA-кодом, например MOW:")
     return ORIGIN
 
 
 async def origin_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     code = normalize_iata(update.message.text)
     if not code:
-        await update.message.reply_text("Введите IATA-код из 3 букв, например MOW:")
+        await send_ui_text(update, context,"Введите IATA-код из 3 букв, например MOW:")
         return ORIGIN
 
     context.user_data["origin"] = code
-    await update.message.reply_text("Введите город прилета IATA-кодом, например LED:")
+    await send_ui_text(update, context,"Введите город прилета IATA-кодом, например LED:")
     return DESTINATION
 
 
 async def destination_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     code = normalize_iata(update.message.text)
     if not code:
-        await update.message.reply_text("Введите IATA-код из 3 букв, например LED:")
+        await send_ui_text(update, context,"Введите IATA-код из 3 букв, например LED:")
         return DESTINATION
 
     if code == context.user_data.get("origin"):
-        await update.message.reply_text("Город прилета должен отличаться от города вылета:")
+        await send_ui_text(update, context,"Город прилета должен отличаться от города вылета:")
         return DESTINATION
 
     context.user_data["destination"] = code
-    await update.message.reply_text("Введите дату вылета в формате YYYY-MM-DD:")
+    await send_ui_text(update, context,"Введите дату вылета в формате YYYY-MM-DD:")
     return DEPARTURE_DATE
 
 
 async def departure_date_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     parsed_date = parse_iso_date(update.message.text)
     if parsed_date is None:
-        await update.message.reply_text("Не понял дату. Введите в формате YYYY-MM-DD:")
+        await send_ui_text(update, context,"Не понял дату. Введите в формате YYYY-MM-DD:")
         return DEPARTURE_DATE
 
     if parsed_date < date.today():
-        await update.message.reply_text("Дата вылета не может быть в прошлом. Введите будущую дату:")
+        await send_ui_text(update, context,"Дата вылета не может быть в прошлом. Введите будущую дату:")
         return DEPARTURE_DATE
 
     context.user_data["departure_date"] = parsed_date
-    await update.message.reply_text(
+    await send_ui_text(update, context,
         "Введите дату возвращения в формате YYYY-MM-DD или отправьте '-' для билета в одну сторону:"
     )
     return RETURN_DATE
@@ -174,63 +270,73 @@ async def return_date_received(update: Update, context: ContextTypes.DEFAULT_TYP
         return RETURN_DATE
 
     search = build_search_from_user_data(context, return_date)
-    await update.message.reply_text("Проверяю цену...")
+    await send_ui_text(update, context,"Проверяю цену...")
 
     quote = await get_quote_or_reply(update, context, search)
     if quote is None:
         return ConversationHandler.END
 
     await save_search_safely(update, context, search, quote)
-    await update.message.reply_text(format_quote_message(quote), reply_markup=ReplyKeyboardRemove())
+    await send_ui_text(update, context,format_quote_message(quote), reply_markup=build_back_keyboard(), parse_mode="HTML")
     context.user_data.clear()
     return ConversationHandler.END
 
 
 async def track_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await begin_track(update, context)
+
+
+async def track_start_from_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.callback_query:
+        await update.callback_query.answer()
+    return await begin_track(update, context)
+
+
+async def begin_track(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     context.user_data["flow"] = "track"
-    await update.message.reply_text("Введите город вылета для отслеживания IATA-кодом, например MOW:")
+    await send_ui_text(update, context, "Введите город вылета для отслеживания IATA-кодом, например MOW:")
     return TRACK_ORIGIN
 
 
 async def track_origin_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     code = normalize_iata(update.message.text)
     if not code:
-        await update.message.reply_text("Введите IATA-код из 3 букв, например MOW:")
+        await send_ui_text(update, context,"Введите IATA-код из 3 букв, например MOW:")
         return TRACK_ORIGIN
 
     context.user_data["origin"] = code
-    await update.message.reply_text("Введите город прилета IATA-кодом, например LED:")
+    await send_ui_text(update, context,"Введите город прилета IATA-кодом, например LED:")
     return TRACK_DESTINATION
 
 
 async def track_destination_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     code = normalize_iata(update.message.text)
     if not code:
-        await update.message.reply_text("Введите IATA-код из 3 букв, например LED:")
+        await send_ui_text(update, context,"Введите IATA-код из 3 букв, например LED:")
         return TRACK_DESTINATION
 
     if code == context.user_data.get("origin"):
-        await update.message.reply_text("Город прилета должен отличаться от города вылета:")
+        await send_ui_text(update, context,"Город прилета должен отличаться от города вылета:")
         return TRACK_DESTINATION
 
     context.user_data["destination"] = code
-    await update.message.reply_text("Введите дату вылета в формате YYYY-MM-DD:")
+    await send_ui_text(update, context,"Введите дату вылета в формате YYYY-MM-DD:")
     return TRACK_DEPARTURE_DATE
 
 
 async def track_departure_date_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     parsed_date = parse_iso_date(update.message.text)
     if parsed_date is None:
-        await update.message.reply_text("Не понял дату. Введите в формате YYYY-MM-DD:")
+        await send_ui_text(update, context,"Не понял дату. Введите в формате YYYY-MM-DD:")
         return TRACK_DEPARTURE_DATE
 
     if parsed_date < date.today():
-        await update.message.reply_text("Дата вылета не может быть в прошлом. Введите будущую дату:")
+        await send_ui_text(update, context,"Дата вылета не может быть в прошлом. Введите будущую дату:")
         return TRACK_DEPARTURE_DATE
 
     context.user_data["departure_date"] = parsed_date
-    await update.message.reply_text(
+    await send_ui_text(update, context,
         "Введите дату возвращения в формате YYYY-MM-DD или отправьте '-' для билета в одну сторону:"
     )
     return TRACK_RETURN_DATE
@@ -242,7 +348,7 @@ async def track_return_date_received(update: Update, context: ContextTypes.DEFAU
         return TRACK_RETURN_DATE
 
     context.user_data["return_date"] = return_date
-    await update.message.reply_text(
+    await send_ui_text(update, context,
         "Введите интервал проверки в минутах, например 1, 5, 10, 30 или 60.\n"
         "Также можно написать: 1 час, 10 часов, 24 часа."
     )
@@ -252,11 +358,11 @@ async def track_return_date_received(update: Update, context: ContextTypes.DEFAU
 async def track_interval_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     interval = parse_interval_minutes(update.message.text)
     if interval is None:
-        await update.message.reply_text("Не понял интервал. Введите любое положительное число минут, например 5:")
+        await send_ui_text(update, context,"Не понял интервал. Введите любое положительное число минут, например 5:")
         return TRACK_INTERVAL
 
     search = build_search_from_user_data(context, context.user_data.get("return_date"))
-    await update.message.reply_text("Проверяю текущую цену и сохраняю отслеживание...")
+    await send_ui_text(update, context,"Проверяю текущую цену и сохраняю отслеживание...")
 
     quote = await get_quote_or_reply(update, context, search)
     if quote is None:
@@ -268,17 +374,19 @@ async def track_interval_received(update: Update, context: ContextTypes.DEFAULT_
         route_id = await to_thread(create_tracked_route, database_path, user_id, search, interval, quote)
     except Exception:
         LOGGER.exception("Failed to create tracked route")
-        await update.message.reply_text("Не удалось сохранить отслеживание. Попробуйте позже.")
+        await send_ui_text(update, context,"Не удалось сохранить отслеживание. Попробуйте позже.", reply_markup=build_back_keyboard())
         return ConversationHandler.END
 
     await save_search_safely(update, context, search, quote)
 
-    await update.message.reply_text(
-        "Отслеживание сохранено.\n"
-        f"ID: {route_id}\n"
-        f"Маршрут: {search.origin} -> {search.destination}\n"
+    await send_ui_text(update, context,
+        "<b>Отслеживание сохранено</b>\n"
+        f"ID: <code>{route_id}</code>\n"
+        f"Маршрут: <b>{search.origin} -> {search.destination}</b>\n"
         f"Интервал: {format_interval(interval)}\n"
-        f"Текущая цена: {quote.price:,} {quote.currency.upper()}".replace(",", " ")
+        f"Текущая стоимость: <b>{quote.price:,} {quote.currency.upper()}</b>".replace(",", " "),
+        reply_markup=build_back_keyboard(),
+        parse_mode="HTML",
     )
     context.user_data.clear()
     return ConversationHandler.END
@@ -290,7 +398,7 @@ async def list_tracks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     routes = await to_thread(list_tracked_routes, database_path, user_id)
 
     if not routes:
-        await update.message.reply_text("Активных отслеживаний пока нет. Создайте первое через /track.")
+        await send_ui_text(update, context, "Активных отслеживаний пока нет. Создайте первое через /track.", reply_markup=build_back_keyboard())
         return
 
     blocks = ["Активные отслеживания:"]
@@ -308,18 +416,18 @@ async def list_tracks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             f"Последняя цена: {price}"
         )
 
-    await update.message.reply_text("\n\n".join(blocks))
+    await send_ui_text(update, context, "\n\n".join(blocks), reply_markup=build_back_keyboard())
 
 
 async def delete_track(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
-        await update.message.reply_text("Укажите ID отслеживания: /delete 1")
+        await send_ui_text(update, context,"Укажите ID отслеживания: /delete 1", reply_markup=build_back_keyboard())
         return
 
     try:
         route_id = int(context.args[0])
     except ValueError:
-        await update.message.reply_text("ID должен быть числом. Пример: /delete 1")
+        await send_ui_text(update, context,"ID должен быть числом. Пример: /delete 1", reply_markup=build_back_keyboard())
         return
 
     user_id = update.effective_user.id
@@ -327,14 +435,14 @@ async def delete_track(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     deleted = await to_thread(deactivate_tracked_route, database_path, user_id, route_id)
 
     if deleted:
-        await update.message.reply_text(f"Отслеживание #{route_id} удалено.")
+        await send_ui_text(update, context,f"Отслеживание #{route_id} удалено.", reply_markup=build_back_keyboard())
     else:
-        await update.message.reply_text(f"Активное отслеживание #{route_id} не найдено.")
+        await send_ui_text(update, context,f"Активное отслеживание #{route_id} не найдено.", reply_markup=build_back_keyboard())
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
-    await update.message.reply_text("Ввод отменен.", reply_markup=ReplyKeyboardRemove())
+    await send_ui_text(update, context,"Ввод отменен.", reply_markup=build_back_keyboard())
     return ConversationHandler.END
 
 
@@ -345,11 +453,11 @@ async def parse_return_date_or_reply(update: Update, context: ContextTypes.DEFAU
 
     return_date = parse_iso_date(text)
     if return_date is None:
-        await update.message.reply_text("Не понял дату. Введите YYYY-MM-DD или '-' для билета в одну сторону:")
+        await send_ui_text(update, context,"Не понял дату. Введите YYYY-MM-DD или '-' для билета в одну сторону:")
         return False
 
     if return_date < context.user_data["departure_date"]:
-        await update.message.reply_text("Дата возвращения не может быть раньше даты вылета:")
+        await send_ui_text(update, context,"Дата возвращения не может быть раньше даты вылета:")
         return False
 
     return return_date
@@ -370,7 +478,7 @@ async def get_quote_or_reply(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return await to_thread(provider.get_lowest_price, search)
     except PriceProviderError as exc:
         LOGGER.exception("Price lookup failed")
-        await update.message.reply_text(f"Не удалось получить цену: {exc}")
+        await send_ui_text(update, context,f"Не удалось получить цену: {exc}", reply_markup=build_back_keyboard())
         return None
 
 
@@ -389,22 +497,22 @@ async def save_search_safely(
 
 
 def format_quote_message(quote: PriceQuote) -> str:
-    route = f"{quote.origin} -> {quote.destination}"
+    route = escape(f"{quote.origin} -> {quote.destination}")
     dates = quote.departure_date.isoformat()
     if quote.return_date:
         dates += f" - {quote.return_date.isoformat()}"
 
     lines = [
-        "Найдена цена:",
-        f"Сервис: {quote.service}",
-        f"Маршрут: {route}",
-        f"Даты: {dates}",
-        f"Цена: {quote.price:,} {quote.currency.upper()}".replace(",", " "),
+        "<b>Найдена стоимость</b>",
+        f"Маршрут: <b>{route}</b>",
+        f"Даты: <code>{escape(dates)}</code>",
+        f"Стоимость: <b>{quote.price:,} {quote.currency.upper()}</b>".replace(",", " "),
     ]
-    if quote.airline:
-        lines.append(f"Авиакомпания: {quote.airline}")
+    airline_name = format_airline_name(quote.airline)
+    if airline_name:
+        lines.append(f"Авиакомпания: {escape(airline_name)}")
     if quote.link:
-        lines.append(f"Ссылка: {quote.link}")
+        lines.append(f"Ссылка: {escape(quote.link)}")
     return "\n".join(lines)
 
 
@@ -449,6 +557,25 @@ def format_interval(minutes: int) -> str:
             return f"{hours} часа"
         return f"{hours} часов"
     return f"{minutes} минут"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -1,4 +1,4 @@
-﻿# JetPing
+# JetPing
 
 Telegram-бот для проверки и отслеживания цен на авиабилеты по маршруту и датам.
 
@@ -17,8 +17,7 @@ Telegram-бот для проверки и отслеживания цен на 
 - Фоновая проверка активных отслеживаний.
 - Уведомление пользователю, если новая цена ниже предыдущей.
 - Ввод маршрута обычными названиями городов, например `Москва` -> `Санкт-Петербург` или `Нью-Йорк`, с сохранением поддержки IATA-кодов.
-- Один рабочий источник реальных цен: `travelpayouts`.
-- Тестовый источник `mock` для локальной разработки без внешнего API.
+- Единственный источник реальных цен: Travelpayouts / Aviasales API.
 - Сохранение успешных поисков и активных отслеживаний в SQLite.
 - CLI-проверка источника цен без запуска Telegram.
 
@@ -31,12 +30,12 @@ Telegram-бот для проверки и отслеживания цен на 
 - SQLite через стандартный модуль `sqlite3`
 - asyncio background task для scheduler
 
-## Быстрый запуск
+## Запуск
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\activate
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 Создайте файл `.env` в корне проекта и заполните его.
@@ -49,26 +48,17 @@ pip install -r requirements.txt
 
 ## Конфигурация `.env`
 
-Минимальная локальная конфигурация с тестовым провайдером:
+Минимальная конфигурация для реального запуска через Travelpayouts / Aviasales API:
 
 ```env
 TELEGRAM_BOT_TOKEN=telegram_bot_token_from_botfather
-JETPING_PRICE_PROVIDER=mock
-JETPING_DATABASE_PATH=data/jetping.db
-JETPING_SCHEDULER_TICK_SECONDS=60
-```
-
-Конфигурация с реальным Travelpayouts / Aviasales API:
-
-```env
-TELEGRAM_BOT_TOKEN=telegram_bot_token_from_botfather
-JETPING_PRICE_PROVIDER=travelpayouts
 TRAVELPAYOUTS_TOKEN=your_travelpayouts_token
 JETPING_CURRENCY=rub
 JETPING_MARKET=ru
 JETPING_DATABASE_PATH=data/jetping.db
 JETPING_SCHEDULER_TICK_SECONDS=60
 ```
+
 
 
 ## Запуск бота
@@ -84,6 +74,10 @@ python main.py
 ```
 
 При запуске бот также запускает фоновый scheduler. Он периодически выбирает активные отслеживания, которым пора выполнить проверку.
+
+## Внешний вид главного меню
+
+<img src="docs/main-menu.png" alt="Главное меню JetPing" width="360">
 
 ## Команды бота
 
@@ -108,11 +102,12 @@ python main.py
 1. Город вылета, например `Москва` или `MOW`.
 2. Город прилета, например `Санкт-Петербург` или `LED`.
 3. Дату вылета, например `8 июня 2026`, `08.06.2026` или `2026-06-08`.
-4. Дату возвращения в том же формате или `-` для билета в одну сторону.
+4. Дату возвращения в том же формате или кнопку `Без обратного билета`.
 
 После успешного поиска результат сохраняется в таблицу `searches`.
 
 Если города нет в локальном словаре, бот обращается к Travelpayouts / Aviasales Autocomplete API и получает подходящий IATA-код автоматически.
+После ввода города бот показывает найденный вариант и просит подтвердить его кнопками `Да` / `Нет`.
 
 ## Создание отслеживания
 
@@ -178,7 +173,7 @@ python -m app.check_price MOW LED 2026-06-20
 python -m app.check_price MOW AER 2026-07-01 --return-date 2026-07-10
 ```
 
-Если используется `JETPING_PRICE_PROVIDER=travelpayouts`, команда обращается к реальному API. Если используется `mock`, возвращается детерминированная тестовая цена.
+Команда обращается к реальному Travelpayouts / Aviasales API.
 
 ## База данных
 
@@ -218,6 +213,14 @@ JetPing/
 ├── REAL_API.md
 └── requirements.txt
 ```
+
+
+
+
+
+
+
+
 
 
 

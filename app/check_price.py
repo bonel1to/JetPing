@@ -8,7 +8,7 @@ from app.price_provider import FlightSearch, PriceProviderError, build_price_pro
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Check a flight price through the configured provider.")
+    parser = argparse.ArgumentParser(description="Check a flight price through Travelpayouts / Aviasales API.")
     parser.add_argument("origin", help="Origin IATA code, for example MOW")
     parser.add_argument("destination", help="Destination IATA code, for example LED")
     parser.add_argument("departure_date", help="Departure date in YYYY-MM-DD format")
@@ -17,7 +17,6 @@ def main() -> None:
 
     settings = load_settings(require_telegram_token=False)
     provider = build_price_provider(
-        name=settings.price_provider,
         token=settings.travelpayouts_token,
         currency=settings.currency,
         market=settings.market,

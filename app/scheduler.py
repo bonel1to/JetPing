@@ -125,7 +125,7 @@ async def notify_price_drop(
     if airline_name:
         message += f"\nАвиакомпания: {escape(airline_name)}"
     if quote.link:
-        message += f"\nСсылка: {escape(quote.link)}"
+        message += f'\n<a href="{escape(quote.link, quote=True)}">Ссылка</a>'
 
     await delete_tracked_ui_messages(application.bot, application.bot_data, route.user_id)
     sent_message = await application.bot.send_message(
@@ -136,6 +136,7 @@ async def notify_price_drop(
     )
     track_ui_message(application.bot_data, route.user_id, sent_message.message_id)
     LOGGER.info("Price drop notification sent for route %s", route.id)
+
 
 
 

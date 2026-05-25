@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import hashlib
 import time
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Protocol
 
 import requests
-
 
 
 @dataclass(frozen=True)
@@ -40,30 +38,6 @@ class PriceProvider(Protocol):
         ...
 
 
-class MockPriceProvider:
-    """Local deterministic provider for development without paid/external API access."""
-
-    def __init__(self, currency: str = "rub") -> None:
-        self.currency = currency
-
-    def get_lowest_price(self, search: FlightSearch) -> PriceQuote:
-        seed = f"{search.origin}:{search.destination}:{search.departure_date}:{search.return_date}"
-        digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
-        price = 7000 + (int(digest[:6], 16) % 23000)
-
-        return PriceQuote(
-            service="Mock provider",
-            origin=search.origin,
-            destination=search.destination,
-            departure_date=search.departure_date,
-            return_date=search.return_date,
-            price=price,
-            currency=self.currency,
-            airline="JP",
-            link=None,
-        )
-
-
 class TravelpayoutsPriceProvider:
     endpoint = "https://api.travelpayouts.com/aviasales/v3/prices_for_dates"
 
@@ -76,7 +50,7 @@ class TravelpayoutsPriceProvider:
         retries: int = 2,
     ) -> None:
         if not token:
-            raise PriceProviderError("TRAVELPAYOUTS_TOKEN is required for travelpayouts provider.")
+            raise PriceProviderError("TRAVELPAYOUTS_TOKEN is required.")
         self.token = token
         self.currency = currency
         self.market = market
@@ -199,9 +173,5 @@ def parse_api_date(value: str | None) -> date | None:
             return None
 
 
-def build_price_provider(name: str, token: str | None, currency: str, market: str = "ru") -> PriceProvider:
-    if name == "mock":
-        return MockPriceProvider(currency=currency)
-    if name == "travelpayouts":
-        return TravelpayoutsPriceProvider(token=token, currency=currency, market=market)
-    raise PriceProviderError(f"Unknown price provider: {name}")
+def build_price_provider(token: str | None, currency: str, market: str = "ru") -> PriceProvider:
+    return TravelpayoutsPriceProvider(token=token, currency=currency, market=market)

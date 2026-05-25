@@ -18,6 +18,7 @@ from telegram.ext import (
 
 from app.config import Settings
 from app.db import create_tracked_route, deactivate_tracked_route, list_tracked_routes, save_search
+from app.input_parser import format_route, parse_city_code, parse_user_date, resolve_city_code
 from app.price_provider import FlightSearch, PriceProvider, PriceProviderError, PriceQuote, build_price_provider
 from app.scheduler import start_scheduler, stop_scheduler
 from app.ui import build_back_keyboard, delete_tracked_ui_messages, format_airline_name, track_ui_message
@@ -136,8 +137,8 @@ async def send_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "Я помогу быстро проверить цену на авиабилет, сохранить маршрут "
         "и уведомить тебя, если цена станет ниже.\n\n"
         "<b>Формат ввода</b>\n"
-        "Маршрут: <code>MOW</code> -> <code>LED</code>\n"
-        "Дата: <code>YYYY-MM-DD</code>\n"
+        "Маршрут: <code>Москва</code> -> <code>Санкт-Петербург</code>\n"
+        "Дата: <code>8 июня 2026</code> или <code>2026-06-08</code>\n"
         "Возврат: дата или <code>-</code> для билета в одну сторону\n\n"
         "Выберите действие ниже."
     )
@@ -155,8 +156,8 @@ async def send_help_message(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         "/list - показать активные отслеживания\n"
         "/delete <id> - удалить отслеживание\n"
         "/cancel - отменить ввод\n\n"
-        "Формат даты: YYYY-MM-DD.\n"
-        "Города пока вводятся IATA-кодами: MOW, LED, AER, KZN.",
+        "Формат даты: 8 июня 2026 или YYYY-MM-DD.\n"
+        "Города можно вводить названиями: Москва, Санкт-Петербург, Сочи, Казань.",
         reply_markup=build_back_keyboard(),
     )
 
@@ -217,40 +218,46 @@ async def price_start_from_menu(update: Update, context: ContextTypes.DEFAULT_TY
 async def begin_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     context.user_data["flow"] = "price"
-    await send_ui_text(update, context, "Введите город вылета IATA-кодом, например MOW:")
+    await send_ui_text(update, context, "Введите город вылета, например Москва или MOW:")
     return ORIGIN
 
 
 async def origin_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    code = normalize_iata(update.message.text)
-    if not code:
-        await send_ui_text(update, context,"Введите IATA-код из 3 букв, например MOW:")
+    code = await resolve_city_or_reply(
+        update,
+        context,
+        retry_message="Не нашел город. Введите название, например Москва или Нью-Йорк, либо IATA-код MOW:",
+    )
+    if code is None:
         return ORIGIN
 
     context.user_data["origin"] = code
-    await send_ui_text(update, context,"Введите город прилета IATA-кодом, например LED:")
+    await send_ui_text(update, context, "Введите город прилета, например Санкт-Петербург, Нью-Йорк или LED:")
     return DESTINATION
 
 
 async def destination_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    code = normalize_iata(update.message.text)
-    if not code:
-        await send_ui_text(update, context,"Введите IATA-код из 3 букв, например LED:")
+    code = await resolve_city_or_reply(
+        update,
+        context,
+        retry_message="Не нашел город. Введите название, например Санкт-Петербург или Нью-Йорк, либо IATA-код LED:",
+    )
+    if code is None:
         return DESTINATION
 
     if code == context.user_data.get("origin"):
-        await send_ui_text(update, context,"Город прилета должен отличаться от города вылета:")
+        await send_ui_text(update, context, "Город прилета должен отличаться от города вылета:")
         return DESTINATION
 
     context.user_data["destination"] = code
-    await send_ui_text(update, context,"Введите дату вылета в формате YYYY-MM-DD:")
+    await send_ui_text(update, context, "Введите дату вылета, например 8 июня 2026 или 2026-06-08:")
     return DEPARTURE_DATE
 
 
 async def departure_date_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     parsed_date = parse_iso_date(update.message.text)
     if parsed_date is None:
-        await send_ui_text(update, context,"Не понял дату. Введите в формате YYYY-MM-DD:")
+        await send_ui_text(update, context,"Не понял дату. Введите, например 8 июня 2026 или 2026-06-08:")
         return DEPARTURE_DATE
 
     if parsed_date < date.today():
@@ -259,7 +266,7 @@ async def departure_date_received(update: Update, context: ContextTypes.DEFAULT_
 
     context.user_data["departure_date"] = parsed_date
     await send_ui_text(update, context,
-        "Введите дату возвращения в формате YYYY-MM-DD или отправьте '-' для билета в одну сторону:"
+        "Введите дату возвращения, например 15 июня 2026, или отправьте '-' для билета в одну сторону:"
     )
     return RETURN_DATE
 
@@ -295,40 +302,46 @@ async def track_start_from_menu(update: Update, context: ContextTypes.DEFAULT_TY
 async def begin_track(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     context.user_data["flow"] = "track"
-    await send_ui_text(update, context, "Введите город вылета для отслеживания IATA-кодом, например MOW:")
+    await send_ui_text(update, context, "Введите город вылета для отслеживания, например Москва или MOW:")
     return TRACK_ORIGIN
 
 
 async def track_origin_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    code = normalize_iata(update.message.text)
-    if not code:
-        await send_ui_text(update, context,"Введите IATA-код из 3 букв, например MOW:")
+    code = await resolve_city_or_reply(
+        update,
+        context,
+        retry_message="Не нашел город. Введите название, например Москва или Нью-Йорк, либо IATA-код MOW:",
+    )
+    if code is None:
         return TRACK_ORIGIN
 
     context.user_data["origin"] = code
-    await send_ui_text(update, context,"Введите город прилета IATA-кодом, например LED:")
+    await send_ui_text(update, context, "Введите город прилета, например Санкт-Петербург, Нью-Йорк или LED:")
     return TRACK_DESTINATION
 
 
 async def track_destination_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    code = normalize_iata(update.message.text)
-    if not code:
-        await send_ui_text(update, context,"Введите IATA-код из 3 букв, например LED:")
+    code = await resolve_city_or_reply(
+        update,
+        context,
+        retry_message="Не нашел город. Введите название, например Санкт-Петербург или Нью-Йорк, либо IATA-код LED:",
+    )
+    if code is None:
         return TRACK_DESTINATION
 
     if code == context.user_data.get("origin"):
-        await send_ui_text(update, context,"Город прилета должен отличаться от города вылета:")
+        await send_ui_text(update, context, "Город прилета должен отличаться от города вылета:")
         return TRACK_DESTINATION
 
     context.user_data["destination"] = code
-    await send_ui_text(update, context,"Введите дату вылета в формате YYYY-MM-DD:")
+    await send_ui_text(update, context, "Введите дату вылета, например 8 июня 2026 или 2026-06-08:")
     return TRACK_DEPARTURE_DATE
 
 
 async def track_departure_date_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     parsed_date = parse_iso_date(update.message.text)
     if parsed_date is None:
-        await send_ui_text(update, context,"Не понял дату. Введите в формате YYYY-MM-DD:")
+        await send_ui_text(update, context,"Не понял дату. Введите, например 8 июня 2026 или 2026-06-08:")
         return TRACK_DEPARTURE_DATE
 
     if parsed_date < date.today():
@@ -337,7 +350,7 @@ async def track_departure_date_received(update: Update, context: ContextTypes.DE
 
     context.user_data["departure_date"] = parsed_date
     await send_ui_text(update, context,
-        "Введите дату возвращения в формате YYYY-MM-DD или отправьте '-' для билета в одну сторону:"
+        "Введите дату возвращения, например 15 июня 2026, или отправьте '-' для билета в одну сторону:"
     )
     return TRACK_RETURN_DATE
 
@@ -382,7 +395,7 @@ async def track_interval_received(update: Update, context: ContextTypes.DEFAULT_
     await send_ui_text(update, context,
         "<b>Отслеживание сохранено</b>\n"
         f"ID: <code>{route_id}</code>\n"
-        f"Маршрут: <b>{search.origin} -> {search.destination}</b>\n"
+        f"Маршрут: <b>{escape(format_route(search.origin, search.destination))}</b>\n"
         f"Интервал: {format_interval(interval)}\n"
         f"Текущая стоимость: <b>{quote.price:,} {quote.currency.upper()}</b>".replace(",", " "),
         reply_markup=build_back_keyboard(),
@@ -410,7 +423,7 @@ async def list_tracks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if route.last_price is not None and route.currency:
             price = f"{route.last_price:,} {route.currency.upper()}".replace(",", " ")
         blocks.append(
-            f"#{route.id}: {route.origin} -> {route.destination}\n"
+            f"#{route.id}: {format_route(route.origin, route.destination)}\n"
             f"Даты: {dates}\n"
             f"Интервал: {format_interval(route.interval_minutes)}\n"
             f"Последняя цена: {price}"
@@ -453,7 +466,7 @@ async def parse_return_date_or_reply(update: Update, context: ContextTypes.DEFAU
 
     return_date = parse_iso_date(text)
     if return_date is None:
-        await send_ui_text(update, context,"Не понял дату. Введите YYYY-MM-DD или '-' для билета в одну сторону:")
+        await send_ui_text(update, context,"Не понял дату. Введите, например 15 июня 2026, или '-' для билета в одну сторону:")
         return False
 
     if return_date < context.user_data["departure_date"]:
@@ -497,7 +510,7 @@ async def save_search_safely(
 
 
 def format_quote_message(quote: PriceQuote) -> str:
-    route = escape(f"{quote.origin} -> {quote.destination}")
+    route = escape(format_route(quote.origin, quote.destination))
     dates = quote.departure_date.isoformat()
     if quote.return_date:
         dates += f" - {quote.return_date.isoformat()}"
@@ -515,19 +528,23 @@ def format_quote_message(quote: PriceQuote) -> str:
         lines.append(f"Ссылка: {escape(quote.link)}")
     return "\n".join(lines)
 
+async def resolve_city_or_reply(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    retry_message: str,
+) -> str | None:
+    code = await to_thread(resolve_city_code, update.message.text)
+    if code is None:
+        await send_ui_text(update, context, retry_message)
+        return None
+    return code
 
 def normalize_iata(value: str) -> str | None:
-    code = value.strip().upper()
-    if len(code) == 3 and code.isalpha():
-        return code
-    return None
+    return parse_city_code(value)
 
 
 def parse_iso_date(value: str) -> date | None:
-    try:
-        return date.fromisoformat(value.strip())
-    except ValueError:
-        return None
+    return parse_user_date(value)
 
 
 def parse_interval_minutes(value: str) -> int | None:
@@ -557,6 +574,10 @@ def format_interval(minutes: int) -> str:
             return f"{hours} часа"
         return f"{hours} часов"
     return f"{minutes} минут"
+
+
+
+
 
 
 

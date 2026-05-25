@@ -8,6 +8,7 @@ from pathlib import Path
 
 from telegram.ext import Application
 
+from app.input_parser import format_route
 from app.db import (
     TrackedRoute,
     list_due_tracked_routes,
@@ -110,7 +111,7 @@ async def notify_price_drop(
 ) -> None:
     old_currency = (route.currency or quote.currency).upper()
     new_currency = quote.currency.upper()
-    route_text = escape(f"{route.origin} -> {route.destination}")
+    route_text = escape(format_route(route.origin, route.destination))
     dates = escape(format_route_dates(route))
     message = (
         "<b>Цена снизилась</b>\n"
@@ -135,6 +136,7 @@ async def notify_price_drop(
     )
     track_ui_message(application.bot_data, route.user_id, sent_message.message_id)
     LOGGER.info("Price drop notification sent for route %s", route.id)
+
 
 
 

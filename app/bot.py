@@ -1,7 +1,7 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
-from asyncio import gather, to_thread
+from asyncio import to_thread
 from datetime import date
 
 from telegram import ReplyKeyboardRemove, Update
@@ -24,19 +24,15 @@ ORIGIN, DESTINATION, DEPARTURE_DATE, RETURN_DATE = range(4)
 
 
 def create_application(settings: Settings) -> Application:
-    providers = []
-    for provider_name in settings.price_providers:
-        providers.append(
-            build_price_provider(
-                name=provider_name,
-                token=settings.travelpayouts_token,
-                currency=settings.currency,
-                market=settings.market,
-            )
-        )
+    provider = build_price_provider(
+        name=settings.price_provider,
+        token=settings.travelpayouts_token,
+        currency=settings.currency,
+        market=settings.market,
+    )
 
     application = Application.builder().token(settings.telegram_bot_token).build()
-    application.bot_data["price_providers"] = providers
+    application.bot_data["price_provider"] = provider
     application.bot_data["database_path"] = settings.database_path
     application.bot_data["admin_ids"] = settings.admin_ids
 
@@ -60,7 +56,7 @@ def create_application(settings: Settings) -> Application:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     admin_ids = context.bot_data.get("admin_ids", set())
-    greeting = "Привет, суперпользователь 👑!\n\n" if user_id in admin_ids else ""
+    greeting = "Привет, суперпользователь!\n\n" if user_id in admin_ids else ""
 
     await update.message.reply_text(
         f"{greeting}JetPing отслеживает цены на авиабилеты.\n\n"
@@ -149,81 +145,41 @@ async def return_date_received(update: Update, context: ContextTypes.DEFAULT_TYP
         return_date=return_date,
     )
 
-    await update.message.reply_text("Проверяю цены у всех доступных провайдеров...")
+    await update.message.reply_text("Проверяю цену...")
 
-    providers: list[PriceProvider] = context.bot_data["price_providers"]
-
-    async def fetch_quote(provider: PriceProvider):
-        try:
-            return await to_thread(provider.get_lowest_price, search)
-        except PriceProviderError as exc:
-            LOGGER.warning("Provider %s failed: %s", provider.__class__.__name__, exc)
-            return exc
-        except Exception as exc:
-            LOGGER.exception("Unexpected error in provider %s", provider.__class__.__name__)
-            return exc
-
-    results = await gather(*(fetch_quote(p) for p in providers))
-    valid_quotes = [q for q in results if not isinstance(q, Exception) and q is not None]
-    failed_count = sum(1 for q in results if isinstance(q, Exception))
-
-    if not valid_quotes:
-        await update.message.reply_text("Не удалось получить цену ни в одном из сервисов.")
+    provider: PriceProvider = context.bot_data["price_provider"]
+    try:
+        quote = await to_thread(provider.get_lowest_price, search)
+    except PriceProviderError as exc:
+        LOGGER.exception("Price lookup failed")
+        await update.message.reply_text(f"Не удалось получить цену: {exc}")
         return ConversationHandler.END
 
-    # Sort quotes by price ascending
-    valid_quotes.sort(key=lambda q: q.price)
-
-    # Save all successful searches to the database
     try:
         user_id = update.effective_user.id
         database_path = context.bot_data["database_path"]
-        for q in valid_quotes:
-            await to_thread(save_search, database_path, user_id, search, q)
-    except Exception as e:
+        await to_thread(save_search, database_path, user_id, search, quote)
+    except Exception:
         LOGGER.exception("Failed to save search to database")
-        # Continue processing even if saving fails, as it's not critical for user experience
 
-    def format_quote(quote) -> str:
-        route = f"{quote.origin} -> {quote.destination}"
-        dates = quote.departure_date.isoformat()
-        if quote.return_date:
-            dates += f" - {quote.return_date.isoformat()}"
+    route = f"{quote.origin} -> {quote.destination}"
+    dates = quote.departure_date.isoformat()
+    if quote.return_date:
+        dates += f" - {quote.return_date.isoformat()}"
 
-        lines = [
-            f"Сервис: {quote.service}",
-            f"Маршрут: {route}",
-            f"Даты: {dates}",
-            f"Цена: {quote.price:,} {quote.currency.upper()}".replace(",", " "),
-        ]
-        if getattr(quote, "airline", None):
-            lines.append(f"Авиакомпания: {quote.airline}")
-        if getattr(quote, "link", None):
-            lines.append(f"Ссылка: {quote.link}")
-        return "\n".join(lines)
+    lines = [
+        "Найдена цена:",
+        f"Сервис: {quote.service}",
+        f"Маршрут: {route}",
+        f"Даты: {dates}",
+        f"Цена: {quote.price:,} {quote.currency.upper()}".replace(",", " "),
+    ]
+    if quote.airline:
+        lines.append(f"Авиакомпания: {quote.airline}")
+    if quote.link:
+        lines.append(f"Ссылка: {quote.link}")
 
-    cheapest_quote = valid_quotes[0]
-    other_quotes = valid_quotes[1:]
-
-    # Send cheapest option
-    cheapest_text = "🔥 Самый дешевый вариант:\n\n" + format_quote(cheapest_quote)
-    await update.message.reply_text(cheapest_text, reply_markup=ReplyKeyboardRemove())
-
-    # Send other options if available
-    if other_quotes:
-        others_text = "Так же в других компаниях:\n\n" + "\n\n".join(format_quote(q) for q in other_quotes)
-        
-        # Telegram limit is 4096 chars per message
-        if len(others_text) > 4000:
-            await update.message.reply_text("Так же в других компаниях:")
-            for q in other_quotes:
-                await update.message.reply_text(format_quote(q))
-        else:
-            await update.message.reply_text(others_text)
-
-    if failed_count > 0:
-        await update.message.reply_text(f"⚠️ Не удалось получить данные от {failed_count} компаний (сработала защита от ботов или нет рейсов). Загляните в консоль для деталей.")
-
+    await update.message.reply_text("\n".join(lines), reply_markup=ReplyKeyboardRemove())
     context.user_data.clear()
     return ConversationHandler.END
 

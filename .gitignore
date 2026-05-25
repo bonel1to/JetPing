@@ -8,6 +8,7 @@ __pycache__/
 .ruff_cache/
 *.sqlite3
 *.db
+data/
 .idea/
 .vscode/
 *.log

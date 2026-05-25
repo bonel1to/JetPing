@@ -19,7 +19,7 @@ Official docs:
 
 ```env
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
-JETPING_PRICE_PROVIDERS=travelpayouts
+JETPING_PRICE_PROVIDER=travelpayouts
 TRAVELPAYOUTS_TOKEN=your_travelpayouts_token
 JETPING_CURRENCY=rub
 JETPING_MARKET=ru

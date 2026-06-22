@@ -32,19 +32,75 @@ Telegram-бот для проверки и отслеживания цен на 
 
 ## Запуск
 
+### macOS / Linux
+
+Перейдите в корень проекта:
+
+```bash
+cd /path/to/JetPing
+```
+
+Создайте и активируйте виртуальное окружение:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Установите зависимости:
+
+```bash
+python3 -m pip install --upgrade pip
+python3 -m pip install -r requirements.txt
+```
+
+Запуск бота:
+
+```bash
+python3 main.py
+```
+
+Если не хотите активировать окружение, можно запускать Python напрямую:
+
+```bash
+.venv/bin/python3 main.py
+```
+
+### Windows PowerShell
+
+Перейдите в корень проекта:
+
+```powershell
+cd C:\path\to\JetPing
+```
+
+Создайте и активируйте виртуальное окружение:
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\activate
+```
+
+Установите зависимости:
+
+```powershell
+python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-Создайте файл `.env` в корне проекта и заполните его.
+Запуск бота:
+
+```powershell
+python main.py
+```
 
 Если PowerShell блокирует активацию `.venv`, можно запускать Python напрямую:
 
 ```powershell
 .\.venv\Scripts\python.exe main.py
 ```
+
+Создайте файл `.env` в корне проекта и заполните его.
 
 ## Конфигурация `.env`
 
@@ -63,9 +119,10 @@ JETPING_SCHEDULER_TICK_SECONDS=60
 
 ## Запуск бота
 
-```powershell
-python main.py
-```
+После настройки `.env` запустите бота командой для вашей ОС из раздела `Запуск`:
+
+- macOS / Linux: `python3 main.py`
+- Windows PowerShell: `python main.py`
 
 После запуска откройте бота в Telegram и отправьте:
 

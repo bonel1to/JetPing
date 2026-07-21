@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 from dataclasses import dataclass
@@ -12,7 +12,6 @@ class Settings:
     telegram_bot_token: str
     admin_ids: frozenset[int]
     database_path: Path
-    price_provider: str = "mock"
     travelpayouts_token: str | None = None
     currency: str = "rub"
     market: str = "ru"
@@ -35,7 +34,6 @@ def load_settings(require_telegram_token: bool = True) -> Settings:
         telegram_bot_token=token,
         admin_ids=admin_ids,
         database_path=Path(os.getenv("JETPING_DATABASE_PATH", "data/jetping.db")),
-        price_provider=os.getenv("JETPING_PRICE_PROVIDER", "mock").strip().lower(),
         travelpayouts_token=os.getenv("TRAVELPAYOUTS_TOKEN", "").strip() or None,
         currency=os.getenv("JETPING_CURRENCY", "rub").strip().lower(),
         market=os.getenv("JETPING_MARKET", "ru").strip().lower(),
